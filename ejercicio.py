@@ -219,3 +219,293 @@ class Servicio(EntidadBase, ABC):
         if len(extras) == 2:
             return self.calcular_costo(horas, extras[0], extras[1])
         raise CalculoInconsistenteError("Demasiados parametros para calcular el costo.")
+
+# ---------------------------------------------------------------
+# SERVICIOS ESPECIALIZADOS
+# ---------------------------------------------------------------
+class ReservaSala(Servicio):
+    def __init__(self, nombre, tarifa_hora, capacidad, disponible=True):
+        super().__init__(nombre, tarifa_hora, disponible)
+        self._capacidad = capacidad
+        self.validar_parametros()
+
+    def validar_parametros(self):
+        if not isinstance(self._capacidad, int) or self._capacidad <= 0:
+            raise ServicioInvalidoError("La capacidad de la sala debe ser un entero positivo.")
+
+    def calcular_costo_base(self, horas):
+        return self._tarifa_hora * horas
+
+    def describir(self):
+        return f"Sala '{self.nombre}' | capacidad {self._capacidad} personas | ${self._tarifa_hora:,.0f}/h"
+
+ class AlquilerEquipo(Servicio):
+    def __init__(self, nombre, tarifa_hora, cantidad, seguro=False, disponible=True):
+        super().__init__(nombre, tarifa_hora, disponible)
+        self._cantidad = cantidad
+        self._seguro = seguro
+        self.validar_parametros()
+
+    def validar_parametros(self):
+        if not isinstance(self._cantidad, int) or self._cantidad <= 0:
+            raise ServicioInvalidoError("La cantidad de equipos debe ser un entero positivo.")
+
+    def calcular_costo_base(self, horas):
+        total = self._tarifa_hora * horas * self._cantidad
+        if self._seguro:
+            total += total * 0.05  # el seguro cuesta 5% extra
+        return total
+
+    def describir(self):
+        seguro = "con seguro" if self._seguro else "sin seguro"
+        return f"Equipo '{self.nombre}' x{self._cantidad} ({seguro}) | ${self._tarifa_hora:,.0f}/h c/u"
+
+  class Asesoria(Servicio):
+    NIVELES = {"junior": 1.0, "senior": 1.5, "experto": 2.0}
+
+    def __init__(self, nombre, tarifa_hora, nivel, disponible=True):
+        super().__init__(nombre, tarifa_hora, disponible)
+        self._nivel = str(nivel).lower()
+        self.validar_parametros()
+
+    def validar_parametros(self):
+        if self._nivel not in Asesoria.NIVELES:
+            raise ServicioInvalidoError(
+                f"Nivel '{self._nivel}' no valido. Use: {', '.join(Asesoria.NIVELES)}."
+            )
+
+    def calcular_costo_base(self, horas):
+        return self._tarifa_hora * horas * Asesoria.NIVELES[self._nivel]
+
+    def describir(self):
+        return f"Asesoria '{self.nombre}' nivel {self._nivel} | ${self._tarifa_hora:,.0f}/h base"
+
+# ===============================================================
+# SEGMENTO 4 - Reserva, GestorFJ y simulacion de 14 operaciones
+# ===============================================================
+# - Reserva: une cliente + servicio + horas + estado (PENDIENTE,
+#   CONFIRMADA, CANCELADA).
+#   * confirmar() usa try/except/else/finally.
+#   * procesar() usa ENCADENAMIENTO de excepciones (raise ... from e).
+# - GestorFJ: maneja las listas internas (clientes, servicios, reservas)
+#   en memoria, sin base de datos.
+# - La simulacion ejecuta 14 operaciones validas e invalidas. La funcion
+#   ejecutar() atrapa los errores para que el programa NUNCA se caiga y
+#   todo queda registrado en el log.
+
+# ---------------------------------------------------------------
+# RESERVA
+# ---------------------------------------------------------------
+class Reserva(EntidadBase):
+    PENDIENTE = "PENDIENTE"
+    CONFIRMADA = "CONFIRMADA"
+    CANCELADA = "CANCELADA"
+
+    def __init__(self, cliente, servicio, horas):
+        super().__init__()
+        if not isinstance(cliente, Cliente):
+            raise ReservaInvalidaError("La reserva necesita un cliente valido.")
+        if not isinstance(servicio, Servicio):
+            raise ReservaInvalidaError("La reserva necesita un servicio valido.")
+        if not isinstance(horas, (int, float)) or horas <= 0 or horas > 12:
+            raise ReservaInvalidaError("La duracion debe estar entre 1 y 12 horas.")
+        self._cliente = cliente
+        self._servicio = servicio
+        self._horas = horas
+        self._estado = Reserva.PENDIENTE
+
+ @property
+    def estado(self):
+        return self._estado
+
+    def confirmar(self):
+        """Confirma la reserva. Usa try/except/else/finally."""
+        try:
+            if self._estado == Reserva.CANCELADA:
+                raise OperacionNoPermitidaError("No se puede confirmar una reserva cancelada.")
+            if self._estado == Reserva.CONFIRMADA:
+                raise OperacionNoPermitidaError("La reserva ya estaba confirmada.")
+            if not self._servicio.disponible:
+                raise ServicioNoDisponibleError(f"'{self._servicio.nombre}' no esta disponible.")
+        except SoftwareFJError as e:
+            log.error("Fallo al confirmar reserva #%s: %s", self.id, e)
+            raise
+        else:
+            # solo se ejecuta si NO hubo error
+            self._estado = Reserva.CONFIRMADA
+            log.info("Reserva #%s confirmada.", self.id)
+        finally:
+            # siempre se ejecuta
+            log.info("Intento de confirmacion de reserva #%s finalizado.", self.id)
+
+    def cancelar(self):
+        if self._estado == Reserva.CANCELADA:
+            raise OperacionNoPermitidaError("La reserva ya estaba cancelada.")
+        self._estado = Reserva.CANCELADA
+        log.info("Reserva #%s cancelada.", self.id)
+
+def procesar(self, con_iva=True, descuento=0.0):
+        """Confirma y calcula el costo. Aqui se ve el ENCADENAMIENTO de excepciones."""
+        try:
+            self.confirmar()
+            costo = self._servicio.calcular_costo(self._horas, con_iva, descuento)
+        except SoftwareFJError as e:
+            # raise ... from e  -> guarda la causa original
+            raise ReservaInvalidaError(f"No se pudo procesar la reserva #{self.id}") from e
+        return costo
+
+    def describir(self):
+        return (f"Reserva #{self.id} [{self._estado}] | {self._cliente.nombre} -> "
+                f"{self._servicio.nombre} por {self._horas}h")
+
+# ---------------------------------------------------------------
+# GESTOR (encagado de manejar las listas internas)
+# ---------------------------------------------------------------
+class GestorFJ:
+    def __init__(self):
+        self.clientes = []
+        self.servicios = []
+        self.reservas = []
+
+    def registrar_cliente(self, nombre, correo, telefono):
+        cliente = Cliente(nombre, correo, telefono)
+        if any(c.correo == cliente.correo for c in self.clientes):
+            raise ClienteInvalidoError(f"Ya existe un cliente con el correo {cliente.correo}.")
+        self.clientes.append(cliente)
+        log.info("Cliente registrado: %s", cliente.describir())
+        return cliente
+
+    def agregar_servicio(self, servicio):
+        self.servicios.append(servicio)
+        log.info("Servicio agregado: %s", servicio.describir())
+        return servicio
+
+    def crear_reserva(self, cliente, servicio, horas):
+        reserva = Reserva(cliente, servicio, horas)
+        self.reservas.append(reserva)
+        log.info("Reserva creada: %s", reserva.describir())
+        return reserva
+
+# ---------------------------------------------------------------
+# SIMULACION (ejecucion de 14 operaciones)
+# ---------------------------------------------------------------
+def ejecutar(numero, titulo, funcion):
+    """Ejecuta una operacion y captura cualquier error para que el programa NO se caiga."""
+    print(f"\n--- Operacion {numero}: {titulo} ---")
+    try:
+        resultado = funcion()
+    except SoftwareFJError as e:
+        print(f"  [ERROR CONTROLADO] {e}")
+        if e.__cause__:  # mostramos la causa si hubo encadenamiento
+            print(f"    causa original: {e.__cause__}")
+        log.error("Operacion %s (%s): %s | causa: %r", numero, titulo, e, e.__cause__)
+    except Exception as e:  # cualquier error inesperado tambien se controla
+        print(f"  [ERROR INESPERADO] {type(e).__name__}: {e}")
+        log.critical("Error inesperado en operacion %s: %r", numero, e)
+    else:
+        print(f"  [OK] {resultado}")
+        log.info("Operacion %s (%s) exitosa.", numero, titulo)
+    finally:
+        print("  (operacion finalizada, el sistema sigue activo)")
+
+ def main():
+    log.info("===== INICIO DE LA SIMULACION SOFTWARE FJ =====")
+    g = GestorFJ()
+    datos = {}  # para guardar objetos creados y usarlos en operaciones siguientes
+
+    def op1():
+        datos["ana"] = g.registrar_cliente("ana gomez", "ana@correo.com", "3001234567")
+        return datos["ana"].describir()
+
+    def op2():
+        return g.registrar_cliente("Pedro", "pedro-correo.com", "3109876543")  # correo malo
+
+    def op3():
+        datos["luis"] = g.registrar_cliente("Luis Perez", "luis@mail.com", "3205551234")
+        return datos["luis"].describir()
+
+    def op4():
+        return g.registrar_cliente("Maria Lopez", "luis@mail.com", "3111112222")  # correo repetido
+
+    def op5():
+        datos["sala"] = g.agregar_servicio(ReservaSala("Sala Innovacion", 50000, 12))
+        return datos["sala"].describir()
+
+    def op6():
+        return g.agregar_servicio(ReservaSala("Sala Rota", -100, 8))  # tarifa negativa
+
+    def op7():
+        datos["equipo"] = g.agregar_servicio(AlquilerEquipo("Portatil Gamer", 15000, 3, seguro=True))
+        datos["asesoria"] = g.agregar_servicio(Asesoria("Asesoria en Python", 40000, "senior"))
+        return datos["equipo"].describir() + " / " + datos["asesoria"].describir()
+
+    def op8():
+        return g.agregar_servicio(Asesoria("Asesoria Magica", 30000, "dios"))  # nivel invalido
+
+    def op9():
+        datos["r1"] = g.crear_reserva(datos["ana"], datos["sala"], 4)
+        costo = datos["r1"].procesar(con_iva=True, descuento=0.10)
+        return f"{datos['r1'].describir()} | costo con IVA y 10% desc: ${costo:,.2f}"
+     
+    def op10():
+        return g.crear_reserva(datos["luis"], datos["sala"], 30)  # 30 horas no permitido
+
+    def op11():
+        # cancelamos y luego intentamos confirmar -> operacion no permitida (encadenada)
+        datos["r2"] = g.crear_reserva(datos["luis"], datos["asesoria"], 2)
+        datos["r2"].cancelar()
+        return datos["r2"].procesar()
+
+    def op12():
+        # servicio no disponible
+        datos["equipo"].disponible = False
+        r3 = g.crear_reserva(datos["ana"], datos["equipo"], 5)
+        return r3.procesar()
+
+    def op13():
+        # probamos las variantes de la "sobrecarga" de costos
+        a = datos["asesoria"]
+        return (f"solo base: ${a.calcular_costo_total(3):,.2f} | "
+                f"con IVA: ${a.calcular_costo_total(3, True):,.2f} | "
+                f"IVA + 20% desc: ${a.calcular_costo_total(3, True, 0.20):,.2f}")
+
+    def op14():
+        return datos["asesoria"].calcular_costo(0)  # horas invalidas
+
+ operaciones = [
+        ("Registrar cliente valido", op1),
+        ("Registrar cliente con correo invalido", op2),
+        ("Registrar segundo cliente valido", op3),
+        ("Registrar cliente con correo repetido", op4),
+        ("Crear sala valida", op5),
+        ("Crear sala con tarifa negativa", op6),
+        ("Crear equipo y asesoria validos", op7),
+        ("Crear asesoria con nivel invalido", op8),
+        ("Reserva exitosa (con IVA y descuento)", op9),
+        ("Reserva con duracion invalida", op10),
+        ("Confirmar reserva cancelada", op11),
+        ("Reservar servicio no disponible", op12),
+        ("Probar variantes de calculo de costo", op13),
+        ("Calcular costo con horas invalidas", op14),
+    ]
+
+for i, (titulo, func) in enumerate(operaciones, start=1):
+        ejecutar(i, titulo, func)
+
+    print("\n===== RESUMEN FINAL =====")
+    print(f"Clientes registrados: {len(g.clientes)}")
+    print(f"Servicios registrados: {len(g.servicios)}")
+    print(f"Reservas creadas: {len(g.reservas)}")
+    for r in g.reservas:
+        print(" -", r.describir())
+    print("\nRevisa el archivo 'logs_software_fj.log' para ver todos los eventos y errores.")
+    log.info("===== FIN DE LA SIMULACION =====")
+
+
+if __name__ == "__main__":
+    main()
+
+# Al final, el programa recorre las 14 operacions con un ciclo for, cada una protegida
+# por ejecutar(), muesta un resumen de lo que quedo en las listas y registra el 
+# cierre en el log. if __name__ == "__main__" hace que todo araque solo al ejecutar
+# el archivo directamente.
